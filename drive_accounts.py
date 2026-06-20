@@ -29,6 +29,8 @@ class _FakeResponse(dict):
         super().__init__({k.lower(): v for k, v in r.headers.items()})
         self.status = r.status_code; self.reason = r.reason
 
+_HTTP_TIMEOUT = 30  # seconds for all Drive API calls
+
 class _RequestsHttp:
     def __init__(self, creds):
         self._session = _AuthorizedSession(creds)
@@ -36,7 +38,8 @@ class _RequestsHttp:
                 redirections=10, connection_type=None):
         resp = self._session.request(method=method, url=uri, data=body,
                                      headers=headers or {},
-                                     allow_redirects=(redirections > 0))
+                                     allow_redirects=(redirections > 0),
+                                     timeout=_HTTP_TIMEOUT)
         return _FakeResponse(resp), resp.content
     def close(self):
         self._session.close()
@@ -100,7 +103,7 @@ def add_account(source_credentials_path, display_name: str = "") -> dict:
     flow = InstalledAppFlow.from_client_secrets_file(
         str(source_credentials_path), SCOPES
     )
-    creds = flow.run_local_server(port=0)
+    creds = flow.run_local_server(port=0, timeout_seconds=120)
 
     # Fetch the signed-in email from the Drive API
     svc = _build_service(creds)
@@ -146,13 +149,23 @@ def rename_account(account_id: str, new_name: str) -> None:
 
 # ── Drive service builders ────────────────────────────────────────────────────
 
+class _TimeoutSession(_requests.Session):
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("timeout", _HTTP_TIMEOUT)
+        return super().request(*args, **kwargs)
+
+
+def _refresh_creds(creds, tp):
+    if not creds.valid and creds.expired and creds.refresh_token:
+        creds.refresh(Request(session=_TimeoutSession()))
+        tp.write_text(creds.to_json())
+
+
 def get_service(account_id: str):
     """Return an authenticated Drive service for a saved account."""
     tp = token_path(account_id)
     creds = Credentials.from_authorized_user_file(str(tp), SCOPES)
-    if not creds.valid and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        tp.write_text(creds.to_json())
+    _refresh_creds(creds, tp)
     return _build_service(creds)
 
 
@@ -160,7 +173,5 @@ def build_thread_service(account_id: str):
     """Return a NEW Drive service for a saved account (requests transport)."""
     tp = token_path(account_id)
     creds = Credentials.from_authorized_user_file(str(tp), SCOPES)
-    if not creds.valid and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        tp.write_text(creds.to_json())
+    _refresh_creds(creds, tp)
     return _build_service(creds)

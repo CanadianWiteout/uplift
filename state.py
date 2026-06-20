@@ -40,6 +40,7 @@ class UploadEntry:
     completed_at: Optional[str] = None
     error: Optional[str] = None
     is_temp_zip: bool = False  # True if local_path is a temp zip to delete after upload
+    job_id: str = ""           # ID of the Job that owns this upload
 
     @classmethod
     def new(cls, local_path: str, file_size: int, folder_id: str,

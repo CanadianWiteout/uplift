@@ -12,7 +12,7 @@ set -e
 
 APP_NAME="Uplift"
 BUNDLE_ID="com.kootenaycolor.uplift"
-PYTHON="/opt/homebrew/bin/python3.14"
+PYTHON="/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST="$SCRIPT_DIR/dist/$APP_NAME.app"
 
@@ -37,6 +37,7 @@ cat > "$DIST/Contents/Info.plist" << EOF
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleExecutable</key>       <string>$APP_NAME</string>
   <key>CFBundlePackageType</key>      <string>APPL</string>
+  <key>CFBundleIconFile</key>         <string>AppIcon</string>
   <key>NSHighResolutionCapable</key>  <true/>
   <key>LSMinimumSystemVersion</key>   <string>12.0</string>
 </dict>
@@ -47,15 +48,19 @@ EOF
 # A real binary is required — macOS 26 blocks shell scripts as app executables.
 # This stub resolves its own path at runtime so it works from any install location.
 LAUNCHER_SRC="$SCRIPT_DIR/launcher_stub.c"
-cat > "$LAUNCHER_SRC" << 'CSRC'
+PYVER="3.14"
+PYFW="/Library/Frameworks/Python.framework/Versions/$PYVER"
+
+cat > "$LAUNCHER_SRC" << CSRC
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <wchar.h>
 #include <mach-o/dyld.h>
+#include <Python.h>
 
 int main(int argc, char *argv[]) {
-    // Resolve the path to this executable
     char exec_path[4096];
     uint32_t size = sizeof(exec_path);
     if (_NSGetExecutablePath(exec_path, &size) != 0) {
@@ -63,40 +68,86 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Strip the filename to get Contents/MacOS/
-    char *last_slash = strrchr(exec_path, '/');
-    if (!last_slash) { return 1; }
-    *last_slash = '\0';
+    // Strip filename → get Contents/MacOS dir
+    char *slash = strrchr(exec_path, '/');
+    if (!slash) return 1;
+    *slash = '\0';
 
-    // Build path to Resources/main.py
-    char main_py[4096];
-    snprintf(main_py, sizeof(main_py), "%s/../Resources/main.py", exec_path);
-
-    // Change working directory to Resources so relative imports work
-    char resources[4096];
+    // Resources dir and main.py path
+    char resources[4096], main_py[4096];
     snprintf(resources, sizeof(resources), "%s/../Resources", exec_path);
+    snprintf(main_py,   sizeof(main_py),   "%s/main.py", resources);
+
+    // Change to Resources so relative imports work
     chdir(resources);
 
-    // Exec Homebrew Python — uses OpenSSL 3.6.1 (compatible with macOS 26 xzone malloc)
-    char *python = "/opt/homebrew/bin/python3.14";
-    char *args[] = { python, main_py, NULL };
-    execv(python, args);
+    // Configure and start the embedded interpreter
+    PyConfig cfg;
+    PyConfig_InitPythonConfig(&cfg);
 
-    // Only reached if execv fails
-    fprintf(stderr, "Uplift: failed to launch Python at %s\n", python);
-    perror("execv");
-    return 1;
+    // Set home so Python finds its stdlib in the framework
+    PyConfig_SetBytesString(&cfg, &cfg.home, "$PYFW");
+
+    // program_name must be an absolute path to our binary for NSBundle to work
+    wchar_t prog[4096];
+    mbstowcs(prog, exec_path, 4096);
+    // Append "/Uplift" back (exec_path now ends at MacOS dir)
+    wcscat(prog, L"/$APP_NAME");
+    PyConfig_SetString(&cfg, &cfg.program_name, prog);
+
+    // sys.argv[0] = main.py path
+    PyConfig_SetBytesString(&cfg, &cfg.run_filename, main_py);
+    cfg.isolated = 0;
+    cfg.site_import = 1;
+
+    PyStatus status = Py_InitializeFromConfig(&cfg);
+    PyConfig_Clear(&cfg);
+    if (PyStatus_Exception(status)) {
+        Py_ExitStatusException(status);
+    }
+
+    // Add Resources to sys.path so sibling modules are importable
+    PyRun_SimpleString("import sys, os; sys.path.insert(0, os.getcwd())");
+
+    // Run main.py
+    FILE *fp = fopen(main_py, "r");
+    if (!fp) {
+        fprintf(stderr, "Uplift: cannot open %s\n", main_py);
+        return 1;
+    }
+    int rc = PyRun_SimpleFile(fp, main_py);
+    fclose(fp);
+
+    Py_Finalize();
+    return rc;
 }
 CSRC
 
-# Compile the launcher
-clang -O2 -o "$DIST/Contents/MacOS/$APP_NAME" "$LAUNCHER_SRC"
+# Compile the launcher — link directly against the versioned Python dylib
+clang -O2 \
+  -I "$PYFW/Headers" \
+  "$PYFW/Python" \
+  -Wl,-rpath,"$PYFW" \
+  -o "$DIST/Contents/MacOS/$APP_NAME" "$LAUNCHER_SRC"
 rm -f "$LAUNCHER_SRC"
 
+# ── App icon ────────────────────────────────────────────────────────────────
+if [ -f "$SCRIPT_DIR/design/uplift.icns" ]; then
+  cp "$SCRIPT_DIR/design/uplift.icns" "$DIST/Contents/Resources/AppIcon.icns"
+fi
+
 # ── Source files ────────────────────────────────────────────────────────────
-for f in main.py drive.py state.py config.py drive_accounts.py mailer.py sender_profile.py requirements.txt; do
+# Copy main_qt.py as main.py (the C launcher always calls main.py)
+cp "$SCRIPT_DIR/main_qt.py" "$DIST/Contents/Resources/main.py"
+
+for f in drive.py state.py config.py drive_accounts.py mailer.py sender_profile.py; do
   cp "$SCRIPT_DIR/$f" "$DIST/Contents/Resources/"
 done
+
+# Copy fonts
+if [ -d "$SCRIPT_DIR/fonts" ]; then
+  cp -r "$SCRIPT_DIR/fonts" "$DIST/Contents/Resources/fonts"
+fi
 
 # Copy credentials + token if present
 for f in credentials.json token.json; do
@@ -109,5 +160,8 @@ codesign --deep --force -s - "$DIST" 2>/dev/null && echo "  (ad-hoc signed)" || 
 echo ""
 echo "Done!  →  dist/$APP_NAME.app"
 echo ""
-echo "To install:  cp -r \"dist/$APP_NAME.app\" /Applications/"
-echo "To update:   re-run this script"
+
+# Auto-install to /Applications
+rm -rf "/Applications/$APP_NAME.app"
+cp -r "$DIST" "/Applications/$APP_NAME.app"
+echo "Installed →  /Applications/$APP_NAME.app"
