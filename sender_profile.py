@@ -29,6 +29,11 @@ KEYRING_SERVICE   = "uplift-email"
 _OLD_PROFILE_PATH    = Path.home() / ".drive-uploader-profile.json"
 _OLD_KEYRING_SERVICE = "drive-uploader-email"
 
+# In-memory password cache keyed by sender_email.
+# Populated at setup time (save) and at startup (preload_all).
+# Background threads read from here — no Keychain access mid-export.
+_pw_cache: dict[str, str] = {}
+
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -70,13 +75,22 @@ def _migrate_old_keyring(email: str) -> None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def load(account_id: str) -> dict | None:
-    """Return {sender_name, sender_email, gmail_app_password} for account, or None."""
+    """Return {sender_name, sender_email, gmail_app_password} for account, or None.
+
+    Password is served from the in-memory cache when available so background
+    threads never trigger a Keychain access (and any macOS prompt) mid-export.
+    """
     data = _read_all()
     acct = data.get("accounts", {}).get(account_id)
     if not acct:
         return None
     email = acct.get("sender_email", "")
-    pw = keyring.get_password(KEYRING_SERVICE, email) or ""
+    if email in _pw_cache:
+        pw = _pw_cache[email]
+    else:
+        pw = keyring.get_password(KEYRING_SERVICE, email) or ""
+        if pw:
+            _pw_cache[email] = pw
     return {
         "sender_name":       acct.get("sender_name", ""),
         "sender_email":      email,
@@ -85,7 +99,7 @@ def load(account_id: str) -> dict | None:
 
 
 def save(account_id: str, sender_name: str, sender_email: str, app_password: str) -> dict:
-    """Write sender identity for account to disk, password to Keychain."""
+    """Write sender identity for account to disk, password to Keychain and cache."""
     data = _read_all()
     if "accounts" not in data:
         data["accounts"] = {}
@@ -95,11 +109,28 @@ def save(account_id: str, sender_name: str, sender_email: str, app_password: str
     }
     _write_all(data)
     keyring.set_password(KEYRING_SERVICE, sender_email, app_password)
+    _pw_cache[sender_email] = app_password
     return {
         "sender_name":       sender_name,
         "sender_email":      sender_email,
         "gmail_app_password": app_password,
     }
+
+
+def preload_all() -> None:
+    """Pre-populate the password cache for every configured sender at startup.
+
+    Call this on the main thread at launch so any macOS Keychain access
+    prompt fires while the user is present, not mid-export in the background.
+    """
+    data = _read_all()
+    for acct in data.get("accounts", {}).values():
+        email = acct.get("sender_email", "")
+        if email and email not in _pw_cache:
+            _migrate_old_keyring(email)
+            pw = keyring.get_password(KEYRING_SERVICE, email) or ""
+            if pw:
+                _pw_cache[email] = pw
 
 
 def clear(account_id: str) -> None:

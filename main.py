@@ -6994,6 +6994,7 @@ class App(QMainWindow):
         self._creation_panel.update_status(
             f"{n} account{'s' if n != 1 else ''} · ready", TEAL_DEEP, TEAL)
         self._creation_panel.preload_folders(active_id)
+        sender_profile.preload_all()
         self._start_next_uploads()
 
     def _manage_accounts(self):
@@ -7003,6 +7004,7 @@ class App(QMainWindow):
             config.save(self._cfg)
             self._creation_panel.refresh_accounts()
             self._init_drive()
+        sender_profile.preload_all()
 
     def _open_settings(self):
         dlg = SettingsDialog(self, parent=self)
