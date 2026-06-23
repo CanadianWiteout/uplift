@@ -200,6 +200,7 @@ EMAIL_BODY_DEFAULT = "Hi,\n\nYour file is ready to download:\n{link}\n\nBest,\n{
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mxf", ".r3d", ".braw", ".mkv",
                     ".avi", ".prores", ".dng"}
+APP_VERSION    = "1.0.0"
 LOG_PATH       = Path.home() / ".uplift-log.txt"
 CRASH_LOG_PATH = Path.home() / ".uplift-crash.log"
 JOBS_PATH = Path.home() / ".uplift-jobs.json"
