@@ -119,6 +119,18 @@ Send a Gmail share link on upload completion. Triggered per job or per folder.
 
 No dependencies. Python is bundled inside the app.
 
+> **"Damaged and can't be opened"?** macOS blocks apps that aren't notarized by Apple. To bypass:
+>
+> **Option 1 — Terminal (quickest):**
+> ```bash
+> xattr -cr /Applications/Uplift.app
+> ```
+> Then launch normally.
+>
+> **Option 2 — Finder:** Right-click the app → **Open** → click **Open** in the dialog.
+>
+> **Option 3 — System Settings:** Go to **Privacy & Security** → scroll down → click **Open Anyway**.
+
 ### Option B — Run from source
 
 ```bash
