@@ -148,7 +148,19 @@ def _write_disk_cache(cache: dict) -> None:
 def _save_token(account_id: str, creds: Credentials) -> None:
     """Persist OAuth token to Keychain, in-memory cache, and disk cache."""
     token_json = creds.to_json()
-    keyring.set_password(TOKEN_KEYRING_SERVICE, account_id, token_json)
+    try:
+        keyring.set_password(TOKEN_KEYRING_SERVICE, account_id, token_json)
+    except Exception:
+        # -25244 (errSecACLChangeFailed): item was written by a different app
+        # signature (e.g. release vs dev build). Delete the old ACL-restricted
+        # item so we can write a fresh one owned by this app.
+        try:
+            keyring.delete_password(TOKEN_KEYRING_SERVICE, account_id)
+            keyring.set_password(TOKEN_KEYRING_SERVICE, account_id, token_json)
+        except Exception:
+            # Disk cache (written below) keeps the app functional even if
+            # Keychain is completely unavailable.
+            pass
     with _token_cache_lock:
         _token_cache[account_id] = token_json
     disk = _read_disk_cache()

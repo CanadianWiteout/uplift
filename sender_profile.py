@@ -108,7 +108,14 @@ def save(account_id: str, sender_name: str, sender_email: str, app_password: str
         "sender_email": sender_email,
     }
     _write_all(data)
-    keyring.set_password(KEYRING_SERVICE, sender_email, app_password)
+    try:
+        keyring.set_password(KEYRING_SERVICE, sender_email, app_password)
+    except Exception:
+        try:
+            keyring.delete_password(KEYRING_SERVICE, sender_email)
+            keyring.set_password(KEYRING_SERVICE, sender_email, app_password)
+        except Exception:
+            pass
     _pw_cache[sender_email] = app_password
     return {
         "sender_name":       sender_name,
